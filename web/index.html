@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agente · Órdenes de Compra</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 16px; }
+      #historial { border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-height: 320px; }
+      .tool { background: #f3f4f6; border-left: 3px solid #6366f1; padding: 6px 8px; margin: 6px 0; font-family: monospace; font-size: 12px; }
+      .confirm { background: #fef3c7; border-left: 3px solid #d97706; padding: 8px; margin: 6px 0; }
+      form { display: flex; gap: 8px; margin-top: 12px; }
+      input { flex: 1; padding: 8px; }
+      button { padding: 8px 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>Agente · Órdenes de Compra</h1>
+    <div id="historial"></div>
+    <form id="form">
+      <input id="msg" placeholder="Ej: procesa la solicitud sol-001" autocomplete="off" />
+      <button type="submit">Enviar</button>
+    </form>
+    <script>
+      const sessionId = "web-" + Math.random().toString(36).slice(2);
+      const historial = document.getElementById("historial");
+      const form = document.getElementById("form");
+      const input = document.getElementById("msg");
+
+      function burbuja(clase, html) {
+        const div = document.createElement("div");
+        div.className = clase;
+        div.innerHTML = html;
+        historial.appendChild(div);
+        historial.scrollTop = historial.scrollHeight;
+      }
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const message = input.value.trim();
+        if (!message) return;
+        input.value = "";
+        burbuja("user", "<b>Tú:</b> " + escapar(message));
+        const pensando = document.createElement("div");
+        pensando.textContent = "pensando…";
+        historial.appendChild(pensando);
+
+        try {
+          const r = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, message }),
+          });
+          const data = await r.json();
+          pensando.remove();
+          if (!data.ok) return burbuja("confirm", "Error: " + escapar(data.error));
+
+          for (const tc of data.toolCalls) {
+            burbuja("tool", "🔧 <b>" + escapar(tc.name) + "</b>(" + escapar(tc.arguments) + ")<br>→ " + escapar(tc.resultado));
+          }
+          burbuja("assistant", "<b>Agente:</b> " + escapar(data.reply));
+          if (data.needsConfirmation) {
+            burbuja("confirm", "⚠️ El agente espera tu confirmación. Responde para continuar.");
+          }
+        } catch (err) {
+          pensando.remove();
+          burbuja("confirm", "Error de red: " + escapar(String(err)));
+        }
+      });
+
+      function escapar(s) {
+        return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+      }
+    </script>
+  </body>
+</html>
