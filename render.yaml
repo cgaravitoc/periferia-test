@@ -1,0 +1,16 @@
+# Blueprint de Render. Despliega el agente como servicio web con Docker.
+# La clave OPENAI_API_KEY se configura en el panel (sync: false), nunca en el repo.
+services:
+  - type: web
+    name: reto-03-oc-sap
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: MAX_ITERACIONES
+        value: "25"

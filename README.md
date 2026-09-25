@@ -36,3 +36,28 @@ Abre `web/index.html` contra `http://localhost:3000`.
 
 ## Seguridad
 La clave del modelo vive solo en `.env` (backend). Nunca en el front, el repo ni los logs.
+
+## Despliegue
+
+El proyecto trae `Dockerfile`, `.dockerignore` y `render.yaml`.
+
+### Opción A — Render (Docker, nube)
+1. Sube este proyecto a un repositorio GitHub (la raíz del repo es esta carpeta).
+2. En Render: **New → Blueprint** y apunta al repo (usa `render.yaml`).
+3. En el panel del servicio, configura la variable `OPENAI_API_KEY` (marcada `sync: false`).
+4. Deploy. El health check es `/api/health`.
+
+### Opción B — Docker local / cualquier host
+```bash
+docker build -t reto-03-oc .
+docker run -p 3000:3000 -e OPENAI_API_KEY=tu-clave reto-03-oc
+```
+Abre http://localhost:3000.
+
+### Opción C — Túnel (link público temporal)
+Con el servidor local corriendo (`bun run dev`):
+```bash
+cloudflared tunnel --url http://localhost:3000
+```
+Usa la URL HTTPS que imprime. Válida mientras el túnel y tu PC estén encendidos.
+
