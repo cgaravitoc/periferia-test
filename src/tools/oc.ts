@@ -26,6 +26,40 @@ export interface Ctx {
 const ok = (data: unknown): string => JSON.stringify({ ok: true, data });
 const fail = (error: string): string => JSON.stringify({ ok: false, error });
 
+// Construye la OrdenCompra desde el paquete + maestros. Fuente unica usada por construir_payload y crear.
+function construirOrden(paquete: Paquete, maestros: ReturnType<typeof cargarMaestros>, derivados: Record<string, string>): OrdenCompra | null {
+  const s = paquete.solicitud;
+  const proveedor = resolverProveedor(paquete, maestros);
+  if (!proveedor) return null;
+  const indicador_iva = s.indicador_iva ?? derivados.indicador_iva ?? proveedor.indicador_iva_default;
+  const condiciones_pago = s.condiciones_pago ?? derivados.condiciones_pago ?? proveedor.condiciones_pago_default;
+  const cotizacion_ref = paquete.cotizacion ? parseCotizacion(paquete.cotizacion.texto).ref : null;
+  const evidencia = paquete.aprobacion ? sha256(paquete.aprobacion.texto) : "";
+  const resultado = validar(paquete, maestros);
+  return {
+    referencia: { solicitud_id: s.solicitud_id, correo_id: paquete.correo.id, cotizacion_ref },
+    sociedad: "1000",
+    organizacion_compras: "1000",
+    proveedor: { codigo_sap: proveedor.codigo_sap, nit: proveedor.nit, nombre: proveedor.nombre },
+    moneda: s.moneda === "USD" ? "USD" : "COP",
+    condiciones_pago,
+    aprobador: { email: paquete.aprobacion?.de ?? "", fecha_aprobacion: paquete.aprobacion?.fecha ?? "", evidencia_sha256: evidencia },
+    posiciones: [
+      {
+        numero: 10,
+        descripcion: s.descripcion.slice(0, 40),
+        cantidad: s.cantidad,
+        unidad: "UN",
+        precio_unitario: s.valor_unitario,
+        centro_costo: s.centro_costo,
+        subarea: s.subarea,
+        indicador_iva,
+      },
+    ],
+    excepciones: resultado.confirmaciones.map((c) => ({ codigo: c.split(":")[0] ?? "RC", detalle: c, confirmado_por: null })),
+  };
+}
+
 // Esquema zod del payload de la OC (HU-3): el payload construido se valida contra el.
 const ordenCompraSchema = z.object({
   referencia: z.object({ solicitud_id: z.string(), correo_id: z.string(), cotizacion_ref: z.string().nullable() }),
@@ -96,45 +130,15 @@ export const construir_payload = {
   args: {
     caso: z.string().describe("Nombre de la carpeta del caso"),
     paquete: z.unknown().describe("Paquete normalizado"),
-    derivados: z.record(z.string()).describe("Valores derivados de maestros (ej. indicador_iva, condiciones_pago)"),
+    derivados: z.record(z.string()).optional().describe("Valores derivados de maestros (ej. indicador_iva, condiciones_pago)"),
   },
-  async execute(args: { caso: string; paquete: unknown; derivados: Record<string, string> }, ctx: Ctx): Promise<string> {
+  async execute(args: { caso: string; paquete: unknown; derivados?: Record<string, string> }, ctx: Ctx): Promise<string> {
     try {
       const paquete = (args.paquete as Paquete) ?? leerPaquete(ctx.directory, args.caso);
       const maestros = cargarMaestros(ctx.directory);
       const s = paquete.solicitud;
-      const proveedor = resolverProveedor(paquete, maestros);
-      if (!proveedor) return fail("no se puede construir el payload: proveedor no resuelto (bloqueo RC1).");
-
-      const derivados = args.derivados ?? {};
-      const indicador_iva = s.indicador_iva ?? derivados.indicador_iva ?? proveedor.indicador_iva_default;
-      const condiciones_pago = s.condiciones_pago ?? derivados.condiciones_pago ?? proveedor.condiciones_pago_default;
-      const cotizacion_ref = paquete.cotizacion ? parseCotizacion(paquete.cotizacion.texto).ref : null;
-      const evidencia = paquete.aprobacion ? sha256(paquete.aprobacion.texto) : "";
-      const resultado = validar(paquete, maestros);
-
-      const payload: OrdenCompra = {
-        referencia: { solicitud_id: s.solicitud_id, correo_id: paquete.correo.id, cotizacion_ref },
-        sociedad: "1000",
-        organizacion_compras: "1000",
-        proveedor: { codigo_sap: proveedor.codigo_sap, nit: proveedor.nit, nombre: proveedor.nombre },
-        moneda: s.moneda === "USD" ? "USD" : "COP",
-        condiciones_pago,
-        aprobador: { email: paquete.aprobacion?.de ?? "", fecha_aprobacion: paquete.aprobacion?.fecha ?? "", evidencia_sha256: evidencia },
-        posiciones: [
-          {
-            numero: 10,
-            descripcion: s.descripcion.slice(0, 40),
-            cantidad: s.cantidad,
-            unidad: "UN",
-            precio_unitario: s.valor_unitario,
-            centro_costo: s.centro_costo,
-            subarea: s.subarea,
-            indicador_iva,
-          },
-        ],
-        excepciones: resultado.confirmaciones.map((c) => ({ codigo: c.split(":")[0] ?? "RC", detalle: c, confirmado_por: null })),
-      };
+      const payload = construirOrden(paquete, maestros, args.derivados ?? {});
+      if (!payload) return fail("no se puede construir el payload: proveedor no resuelto (bloqueo RC1).");
 
       const validado = ordenCompraSchema.safeParse(payload);
       if (!validado.success) return fail(`payload invalido: ${validado.error.issues.map((i) => i.message).join("; ")}`);
@@ -225,7 +229,9 @@ export const crear = {
         return ok({ numero_oc: existente.numero_oc, fecha: new Date().toISOString(), idempotente: true });
       }
 
-      const payload = args.payload as OrdenCompra;
+      // Se reconstruye la orden desde el caso (no se confia en el payload del modelo).
+      const payload = construirOrden(paquete, maestros, v.derivados);
+      if (!payload) return fail("no se pudo construir la orden para crear (proveedor no resuelto).");
       const creada = await sap.crearOrden(payload);
       registrarControl(ctx.directory, { solicitud_id, resultado: "creada", numero_oc: creada.numero_oc, retroactiva: v.retroactiva, bloqueos: [], confirmaciones: v.confirmaciones });
       registrarLog(ctx.directory, { herramienta: "oc_crear", caso: args.caso, ok: true, resumen: `creada ${creada.numero_oc}` });
